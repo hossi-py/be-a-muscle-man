@@ -65,3 +65,5 @@ create policy "Allow anon protein updates"
   to anon
   using (true)
   with check (true);
+
+notify pgrst, 'reload schema';

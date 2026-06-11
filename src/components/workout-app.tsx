@@ -636,7 +636,7 @@ export function WorkoutApp() {
           </div>
         </section>
 
-        {storageError ? <StorageErrorPanel error={storageError} /> : null}
+        {storageError ? <DatabaseErrorPanel error={storageError} /> : null}
 
         <Panel>
           <div className="mb-4 flex items-center justify-between gap-3">
@@ -1103,6 +1103,25 @@ type SummaryMetricProps = {
   value: string | number;
   unit: string;
 };
+
+function DatabaseErrorPanel({ error }: { error: unknown }) {
+  const rawMessage =
+    error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.";
+  const isMissingTable = rawMessage.includes("workout_entries");
+  const title = isMissingTable
+    ? "Supabase 테이블을 생성해 주세요."
+    : "Supabase 연결을 확인해 주세요.";
+  const message = isMissingTable
+    ? "Supabase SQL Editor에서 supabase/schema.sql 파일 내용을 실행해야 운동 기록 테이블이 만들어집니다."
+    : rawMessage;
+
+  return (
+    <section className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-950 shadow-sm">
+      <p className="font-bold">{title}</p>
+      <p className="mt-1 leading-6">{message}</p>
+    </section>
+  );
+}
 
 function SummaryMetric({ icon: Icon, label, value, unit }: SummaryMetricProps) {
   return (

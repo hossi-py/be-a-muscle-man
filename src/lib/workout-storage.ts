@@ -1,5 +1,3 @@
-import { getSupabaseBrowserClient } from "@/lib/supabase";
-
 export type WorkoutSet = {
   id: string;
   weight: number;
@@ -21,148 +19,66 @@ export type ProteinEntry = {
   updatedAt: string;
 };
 
-type WorkoutEntryRow = {
-  id: string;
-  entry_date: string;
-  exercise: string;
-  sets: WorkoutSet[];
-  note: string | null;
-  created_at: string;
-};
+async function requestJson<T>(path: string, init?: RequestInit) {
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...init?.headers,
+    },
+  });
 
-type ProteinEntryRow = {
-  entry_date: string;
-  grams: number;
-  updated_at: string;
-};
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
 
-const PROFILE_ID = process.env.NEXT_PUBLIC_WORKOUT_PROFILE_ID || "default";
-
-function getRequiredSupabaseClient() {
-  const supabase = getSupabaseBrowserClient();
-
-  if (!supabase) {
-    throw new Error(
-      "Supabase 환경변수가 없습니다. NEXT_PUBLIC_SUPABASE_URL과 NEXT_PUBLIC_SUPABASE_ANON_KEY를 설정해 주세요.",
-    );
+    throw new Error(body?.error || "요청을 처리하지 못했습니다.");
   }
 
-  return supabase;
-}
-
-function mapWorkoutRow(row: WorkoutEntryRow): WorkoutEntry {
-  return {
-    id: row.id,
-    date: row.entry_date,
-    exercise: row.exercise,
-    sets: row.sets,
-    note: row.note || undefined,
-    createdAt: row.created_at,
-  };
-}
-
-function mapProteinRow(row: ProteinEntryRow): ProteinEntry {
-  return {
-    date: row.entry_date,
-    grams: Number(row.grams),
-    updatedAt: row.updated_at,
-  };
-}
-
-function normalizeSupabaseError(error: { message?: string }) {
-  return new Error(error.message || "Supabase 요청에 실패했습니다.");
+  return (await response.json()) as T;
 }
 
 export async function loadWorkoutEntries() {
-  const supabase = getRequiredSupabaseClient();
-  const { data, error } = await supabase
-    .from("workout_entries")
-    .select("id, entry_date, exercise, sets, note, created_at")
-    .eq("profile_id", PROFILE_ID)
-    .order("entry_date", { ascending: false })
-    .order("created_at", { ascending: false });
+  const payload = await requestJson<{ entries: WorkoutEntry[] }>(
+    "/api/workouts",
+  );
 
-  if (error) {
-    throw normalizeSupabaseError(error);
-  }
-
-  return ((data ?? []) as WorkoutEntryRow[]).map(mapWorkoutRow);
+  return payload.entries;
 }
 
 export async function saveWorkoutEntry(entry: WorkoutEntry) {
-  const supabase = getRequiredSupabaseClient();
-  const { data, error } = await supabase
-    .from("workout_entries")
-    .insert({
-      id: entry.id,
-      profile_id: PROFILE_ID,
-      entry_date: entry.date,
-      exercise: entry.exercise,
-      sets: entry.sets,
-      note: entry.note ?? null,
-      created_at: entry.createdAt,
-    })
-    .select("id, entry_date, exercise, sets, note, created_at")
-    .single();
+  const payload = await requestJson<{ entry: WorkoutEntry }>("/api/workouts", {
+    method: "POST",
+    body: JSON.stringify(entry),
+  });
 
-  if (error) {
-    throw normalizeSupabaseError(error);
-  }
-
-  return mapWorkoutRow(data as WorkoutEntryRow);
+  return payload.entry;
 }
 
 export async function deleteWorkoutEntry(id: string) {
-  const supabase = getRequiredSupabaseClient();
-  const { error } = await supabase
-    .from("workout_entries")
-    .delete()
-    .eq("profile_id", PROFILE_ID)
-    .eq("id", id);
-
-  if (error) {
-    throw normalizeSupabaseError(error);
-  }
+  await requestJson<{ id: string }>(`/api/workouts/${id}`, {
+    method: "DELETE",
+  });
 
   return id;
 }
 
 export async function loadProteinEntries() {
-  const supabase = getRequiredSupabaseClient();
-  const { data, error } = await supabase
-    .from("protein_entries")
-    .select("entry_date, grams, updated_at")
-    .eq("profile_id", PROFILE_ID)
-    .order("entry_date", { ascending: false });
+  const payload = await requestJson<{ entries: ProteinEntry[] }>(
+    "/api/protein",
+  );
 
-  if (error) {
-    throw normalizeSupabaseError(error);
-  }
-
-  return ((data ?? []) as ProteinEntryRow[]).map(mapProteinRow);
+  return payload.entries;
 }
 
 export async function upsertProteinEntry(entry: ProteinEntry) {
-  const supabase = getRequiredSupabaseClient();
-  const { data, error } = await supabase
-    .from("protein_entries")
-    .upsert(
-      {
-        profile_id: PROFILE_ID,
-        entry_date: entry.date,
-        grams: entry.grams,
-        updated_at: entry.updatedAt,
-      },
-      { onConflict: "profile_id,entry_date" },
-    )
-    .select("entry_date, grams, updated_at")
-    .single();
+  const payload = await requestJson<{ entry: ProteinEntry }>("/api/protein", {
+    method: "POST",
+    body: JSON.stringify(entry),
+  });
 
-  if (error) {
-    throw normalizeSupabaseError(error);
-  }
-
-  return mapProteinRow(data as ProteinEntryRow);
+  return payload.entry;
 }
 
 export function getEntryVolume(entry: WorkoutEntry) {
