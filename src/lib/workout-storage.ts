@@ -1,3 +1,5 @@
+import { getSupabaseBrowserClient } from "@/lib/supabase";
+
 export type WorkoutSet = {
   id: string;
   weight: number;
@@ -19,68 +21,148 @@ export type ProteinEntry = {
   updatedAt: string;
 };
 
-const WORKOUTS_KEY = "workout-tracker:workouts";
-const PROTEIN_KEY = "workout-tracker:protein";
+type WorkoutEntryRow = {
+  id: string;
+  entry_date: string;
+  exercise: string;
+  sets: WorkoutSet[];
+  note: string | null;
+  created_at: string;
+};
 
-function readJson<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") {
-    return fallback;
+type ProteinEntryRow = {
+  entry_date: string;
+  grams: number;
+  updated_at: string;
+};
+
+const PROFILE_ID = process.env.NEXT_PUBLIC_WORKOUT_PROFILE_ID || "default";
+
+function getRequiredSupabaseClient() {
+  const supabase = getSupabaseBrowserClient();
+
+  if (!supabase) {
+    throw new Error(
+      "Supabase 환경변수가 없습니다. NEXT_PUBLIC_SUPABASE_URL과 NEXT_PUBLIC_SUPABASE_ANON_KEY를 설정해 주세요.",
+    );
   }
 
-  const raw = window.localStorage.getItem(key);
-  if (!raw) {
-    return fallback;
+  return supabase;
+}
+
+function mapWorkoutRow(row: WorkoutEntryRow): WorkoutEntry {
+  return {
+    id: row.id,
+    date: row.entry_date,
+    exercise: row.exercise,
+    sets: row.sets,
+    note: row.note || undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function mapProteinRow(row: ProteinEntryRow): ProteinEntry {
+  return {
+    date: row.entry_date,
+    grams: Number(row.grams),
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeSupabaseError(error: { message?: string }) {
+  return new Error(error.message || "Supabase 요청에 실패했습니다.");
+}
+
+export async function loadWorkoutEntries() {
+  const supabase = getRequiredSupabaseClient();
+  const { data, error } = await supabase
+    .from("workout_entries")
+    .select("id, entry_date, exercise, sets, note, created_at")
+    .eq("profile_id", PROFILE_ID)
+    .order("entry_date", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw normalizeSupabaseError(error);
   }
 
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
+  return ((data ?? []) as WorkoutEntryRow[]).map(mapWorkoutRow);
+}
+
+export async function saveWorkoutEntry(entry: WorkoutEntry) {
+  const supabase = getRequiredSupabaseClient();
+  const { data, error } = await supabase
+    .from("workout_entries")
+    .insert({
+      id: entry.id,
+      profile_id: PROFILE_ID,
+      entry_date: entry.date,
+      exercise: entry.exercise,
+      sets: entry.sets,
+      note: entry.note ?? null,
+      created_at: entry.createdAt,
+    })
+    .select("id, entry_date, exercise, sets, note, created_at")
+    .single();
+
+  if (error) {
+    throw normalizeSupabaseError(error);
   }
+
+  return mapWorkoutRow(data as WorkoutEntryRow);
 }
 
-function writeJson<T>(key: string, value: T) {
-  if (typeof window === "undefined") {
-    return;
+export async function deleteWorkoutEntry(id: string) {
+  const supabase = getRequiredSupabaseClient();
+  const { error } = await supabase
+    .from("workout_entries")
+    .delete()
+    .eq("profile_id", PROFILE_ID)
+    .eq("id", id);
+
+  if (error) {
+    throw normalizeSupabaseError(error);
   }
 
-  window.localStorage.setItem(key, JSON.stringify(value));
+  return id;
 }
 
-export function loadWorkoutEntries() {
-  return readJson<WorkoutEntry[]>(WORKOUTS_KEY, []);
+export async function loadProteinEntries() {
+  const supabase = getRequiredSupabaseClient();
+  const { data, error } = await supabase
+    .from("protein_entries")
+    .select("entry_date, grams, updated_at")
+    .eq("profile_id", PROFILE_ID)
+    .order("entry_date", { ascending: false });
+
+  if (error) {
+    throw normalizeSupabaseError(error);
+  }
+
+  return ((data ?? []) as ProteinEntryRow[]).map(mapProteinRow);
 }
 
-export function saveWorkoutEntry(entry: WorkoutEntry) {
-  const entries = loadWorkoutEntries();
-  const next = [entry, ...entries].sort((a, b) => {
-    const byDate = b.date.localeCompare(a.date);
-    return byDate || b.createdAt.localeCompare(a.createdAt);
-  });
+export async function upsertProteinEntry(entry: ProteinEntry) {
+  const supabase = getRequiredSupabaseClient();
+  const { data, error } = await supabase
+    .from("protein_entries")
+    .upsert(
+      {
+        profile_id: PROFILE_ID,
+        entry_date: entry.date,
+        grams: entry.grams,
+        updated_at: entry.updatedAt,
+      },
+      { onConflict: "profile_id,entry_date" },
+    )
+    .select("entry_date, grams, updated_at")
+    .single();
 
-  writeJson(WORKOUTS_KEY, next);
-  return next;
-}
+  if (error) {
+    throw normalizeSupabaseError(error);
+  }
 
-export function deleteWorkoutEntry(id: string) {
-  const next = loadWorkoutEntries().filter((entry) => entry.id !== id);
-  writeJson(WORKOUTS_KEY, next);
-  return next;
-}
-
-export function loadProteinEntries() {
-  return readJson<ProteinEntry[]>(PROTEIN_KEY, []);
-}
-
-export function upsertProteinEntry(entry: ProteinEntry) {
-  const entries = loadProteinEntries();
-  const next = [
-    entry,
-    ...entries.filter((item) => item.date !== entry.date),
-  ].sort((a, b) => b.date.localeCompare(a.date));
-
-  writeJson(PROTEIN_KEY, next);
-  return next;
+  return mapProteinRow(data as ProteinEntryRow);
 }
 
 export function getEntryVolume(entry: WorkoutEntry) {
