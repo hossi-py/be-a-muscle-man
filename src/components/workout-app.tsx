@@ -303,8 +303,11 @@ function getInitialWeight(weight?: number | null) {
     : ("" as unknown as number);
 }
 
-function createDefaultSets(weight?: number | null): WorkoutFormValues["sets"] {
-  const initialWeight = getInitialWeight(weight);
+function createDefaultSets(
+  weight?: number | null,
+  options?: { allowZeroWeight?: boolean },
+): WorkoutFormValues["sets"] {
+  const initialWeight = options?.allowZeroWeight ? 0 : getInitialWeight(weight);
 
   return Array.from({ length: 4 }, () => ({ weight: initialWeight, reps: 10 }));
 }
@@ -545,6 +548,13 @@ export function WorkoutApp() {
     (exercise) => exercise.name === watchedExercise,
   );
   const isTreadmillSelected = watchedExerciseConfig?.kind === "treadmill";
+
+  useEffect(() => {
+    if (isTreadmillSelected) {
+      workoutForm.setValue("sets", createDefaultSets(0, { allowZeroWeight: true }));
+    }
+  }, [isTreadmillSelected, workoutForm]);
+
   const watchedSets =
     useWatch({
       control: workoutForm.control,
@@ -772,13 +782,16 @@ export function WorkoutApp() {
   }
 
   function selectExercise(name: string) {
+    const exercise = exercises.find((item) => item.name === name);
     const weight = getRecentWeightForExercise(workouts, name) ?? 0;
 
     workoutForm.setValue("exercise", name, {
       shouldDirty: true,
       shouldValidate: true,
     });
-    workoutForm.setValue("sets", createDefaultSets(weight), {
+    workoutForm.setValue("sets", createDefaultSets(weight, {
+      allowZeroWeight: exercise?.kind === "treadmill",
+    }), {
       shouldDirty: true,
       shouldValidate: true,
     });
