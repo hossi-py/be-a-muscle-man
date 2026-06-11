@@ -7,12 +7,14 @@ create table if not exists public.workout_entries (
   entry_date date not null,
   exercise text not null,
   sets jsonb not null,
+  cardio jsonb,
   note text,
   created_at timestamptz not null default now()
 );
 
 alter table public.workout_entries
-  add column if not exists user_id uuid references auth.users(id) on delete cascade;
+  add column if not exists user_id uuid references auth.users(id) on delete cascade,
+  add column if not exists cardio jsonb;
 
 create index if not exists workout_entries_user_date_idx
   on public.workout_entries (user_id, entry_date desc, created_at desc);

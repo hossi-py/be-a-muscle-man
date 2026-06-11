@@ -97,12 +97,14 @@ type CategoryId =
   | "chest"
   | "shoulder"
   | "arm"
-  | "core";
+  | "core"
+  | "cardio";
 
 type WorkoutExercise = {
   name: string;
   category: Exclude<CategoryId, "upper">;
   icon: LucideIcon;
+  kind?: "strength" | "treadmill";
   tips: string[];
 };
 
@@ -122,6 +124,12 @@ const queryKeys = {
 const HYDRATION_DATE = "2000-01-03";
 const EXERCISES_PER_PAGE = 8;
 const REP_OPTIONS = Array.from({ length: 30 }, (_, index) => index + 1);
+const TREADMILL_DURATION_OPTIONS = [10, 15, 20, 25, 30, 35, 40, 45, 50, 60];
+const TREADMILL_INCLINE_OPTIONS = Array.from({ length: 16 }, (_, index) => index);
+const TREADMILL_SPEED_OPTIONS = Array.from(
+  { length: 31 },
+  (_, index) => Math.round((3 + index * 0.5) * 10) / 10,
+);
 
 const categories: Array<{
   id: CategoryId;
@@ -135,6 +143,7 @@ const categories: Array<{
   { id: "shoulder", label: "어깨", icon: CircleDot },
   { id: "arm", label: "팔", icon: BicepsFlexed },
   { id: "core", label: "코어", icon: ScanHeart },
+  { id: "cardio", label: "유산소", icon: Timer },
 ];
 
 const exercises: WorkoutExercise[] = [
@@ -268,6 +277,18 @@ const exercises: WorkoutExercise[] = [
 
 const weekdayLabels = ["일", "월", "화", "수", "목", "금", "토"];
 
+exercises.push({
+  name: "런닝머신",
+  category: "cardio",
+  icon: Timer,
+  kind: "treadmill",
+  tips: [
+    "처음 3분은 가볍게 워밍업하고 기록을 시작해요.",
+    "경사도와 속도는 숨이 차지만 자세가 무너지지 않는 선에서 맞춰요.",
+    "마지막 2분은 속도를 낮춰 심박을 천천히 내려요.",
+  ],
+});
+
 function createId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -276,8 +297,16 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function createDefaultSets(weight = 0): WorkoutFormValues["sets"] {
-  return Array.from({ length: 4 }, () => ({ weight, reps: 10 }));
+function getInitialWeight(weight?: number | null) {
+  return typeof weight === "number" && weight > 0
+    ? weight
+    : ("" as unknown as number);
+}
+
+function createDefaultSets(weight?: number | null): WorkoutFormValues["sets"] {
+  const initialWeight = getInitialWeight(weight);
+
+  return Array.from({ length: 4 }, () => ({ weight: initialWeight, reps: 10 }));
 }
 
 function getLastSevenDays(selectedDate: string) {
@@ -346,6 +375,12 @@ function formatRecordDate(dateKey: string) {
   return `${year}.${month}.${day} (${weekdayLabels[date.getDay()]})`;
 }
 
+function formatMonthDay(dateKey: string) {
+  const date = new Date(`${dateKey}T00:00:00`);
+
+  return `${date.getMonth() + 1}월 ${date.getDate()}일`;
+}
+
 export function WorkoutApp() {
   const queryClient = useQueryClient();
   const [isClientReady, setIsClientReady] = useState(false);
@@ -357,6 +392,10 @@ export function WorkoutApp() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [proteinInput, setProteinInput] = useState("");
+  const [proteinInputError, setProteinInputError] = useState<string | null>(
+    null,
+  );
   const [todayDate, setTodayDate] = useState(HYDRATION_DATE);
   const [selectedDate, setSelectedDate] = useState(HYDRATION_DATE);
   const [selectedCategory, setSelectedCategory] =
@@ -366,8 +405,13 @@ export function WorkoutApp() {
     null,
   );
   const [tipExercise, setTipExercise] = useState<WorkoutExercise | null>(null);
+  const [detailEntry, setDetailEntry] = useState<WorkoutEntry | null>(null);
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [visibleMonth, setVisibleMonth] = useState(HYDRATION_DATE);
+  const [treadmillDuration, setTreadmillDuration] = useState(30);
+  const [treadmillIncline, setTreadmillIncline] = useState(0);
+  const [treadmillSpeed, setTreadmillSpeed] = useState(6);
 
   const workoutsQuery = useQuery({
     queryKey: queryKeys.workouts,
@@ -473,7 +517,7 @@ export function WorkoutApp() {
   }, [selectedCategory]);
 
   useEffect(() => {
-    if (!isCalendarOpen) {
+    if (!isCalendarOpen && !tipExercise && !detailEntry && !isSummaryOpen) {
       return;
     }
 
@@ -490,13 +534,17 @@ export function WorkoutApp() {
       document.body.style.overflow = previousOverflow;
       document.body.style.paddingRight = previousPaddingRight;
     };
-  }, [isCalendarOpen]);
+  }, [detailEntry, isCalendarOpen, isSummaryOpen, tipExercise]);
 
   const watchedExercise =
     useWatch({
       control: workoutForm.control,
       name: "exercise",
     }) ?? "";
+  const watchedExerciseConfig = exercises.find(
+    (exercise) => exercise.name === watchedExercise,
+  );
+  const isTreadmillSelected = watchedExerciseConfig?.kind === "treadmill";
   const watchedSets =
     useWatch({
       control: workoutForm.control,
@@ -525,11 +573,15 @@ export function WorkoutApp() {
   const recordProgress = Math.round(
     (((daySets > 0 ? 1 : 0) + (selectedProtein > 0 ? 1 : 0)) / 2) * 100,
   );
+  const summaryTitle =
+    selectedDate === todayDate ? "오늘 요약" : `${formatMonthDay(selectedDate)} 요약`;
   const filteredExercises = useMemo(() => {
     if (selectedCategory === "upper") {
       return exercises.filter(
         (exercise) =>
-          exercise.category !== "lower" && exercise.category !== "core",
+          exercise.category !== "lower" &&
+          exercise.category !== "core" &&
+          exercise.category !== "cardio",
       );
     }
 
@@ -571,11 +623,20 @@ export function WorkoutApp() {
         date: values.date,
         exercise: values.exercise.trim(),
         note: values.note?.trim() || undefined,
-        sets: values.sets.map((set) => ({
-          id: createId(),
-          weight: Number(set.weight),
-          reps: Number(set.reps),
-        })),
+        sets: isTreadmillSelected
+          ? []
+          : values.sets.map((set) => ({
+              id: createId(),
+              weight: Number(set.weight),
+              reps: Number(set.reps),
+            })),
+        cardio: isTreadmillSelected
+          ? {
+              durationMinutes: treadmillDuration,
+              incline: treadmillIncline,
+              speed: treadmillSpeed,
+            }
+          : undefined,
         createdAt: new Date().toISOString(),
       };
 
@@ -601,16 +662,29 @@ export function WorkoutApp() {
   });
 
   const saveProteinMutation = useMutation({
-    mutationFn: async (values: ProteinFormValues) => {
-      const entry: ProteinEntry = {
-        date: selectedDate,
-        grams: Number(values.grams),
-        updatedAt: new Date().toISOString(),
-      };
+    mutationFn: async (entry: ProteinEntry) => upsertProteinEntry(entry),
+    onMutate: async (entry) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.protein });
+      const previous =
+        queryClient.getQueryData<ProteinEntry[]>(queryKeys.protein);
 
-      return upsertProteinEntry(entry);
+      queryClient.setQueryData<ProteinEntry[]>(
+        queryKeys.protein,
+        (current = []) =>
+          [entry, ...current.filter((item) => item.date !== entry.date)].sort(
+            (a, b) => b.date.localeCompare(a.date),
+          ),
+      );
+      setProteinInput("");
+
+      return { previous };
     },
-    onSuccess: () => {
+    onError: (_error, _entry, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(queryKeys.protein, context.previous);
+      }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.protein });
     },
   });
@@ -621,6 +695,24 @@ export function WorkoutApp() {
     addWorkoutMutation.error ??
     deleteWorkoutMutation.error ??
     saveProteinMutation.error;
+
+  function handleProteinSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = proteinInput.trim();
+    const grams = Number(trimmed);
+
+    if (!trimmed || !Number.isFinite(grams) || grams < 0) {
+      setProteinInputError("단백질 섭취량을 입력해 주세요.");
+      return;
+    }
+
+    setProteinInputError(null);
+    saveProteinMutation.mutate({
+      date: selectedDate,
+      grams,
+      updatedAt: new Date().toISOString(),
+    });
+  }
 
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -852,13 +944,23 @@ export function WorkoutApp() {
 
         <Panel>
           <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-lg font-bold">오늘 요약</h2>
+            <h2 className="text-lg font-bold">{summaryTitle}</h2>
             <Badge className="border-zinc-200 bg-zinc-100 text-zinc-800">
               기록 {recordProgress}%
             </Badge>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 min-[440px]:grid-cols-4">
+          <div
+            className="grid cursor-pointer grid-cols-2 gap-2 min-[440px]:grid-cols-4"
+            role="button"
+            tabIndex={0}
+            onClick={() => setIsSummaryOpen(true)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                setIsSummaryOpen(true);
+              }
+            }}
+          >
             <SummaryMetric
               icon={Flame}
               label="운동 볼륨"
@@ -887,9 +989,7 @@ export function WorkoutApp() {
 
           <form
             className="mt-3 grid grid-cols-[1fr_96px] items-end gap-2 rounded-md bg-zinc-50 p-3"
-            onSubmit={proteinForm.handleSubmit((values) =>
-              saveProteinMutation.mutate(values),
-            )}
+            onSubmit={handleProteinSubmit}
           >
             <div className="grid gap-1.5">
               <div className="flex items-center justify-between gap-2">
@@ -906,9 +1006,11 @@ export function WorkoutApp() {
                 pattern="[0-9]*"
                 step="1"
                 type="number"
-                {...proteinForm.register("grams", {
-                  valueAsNumber: true,
-                })}
+                value={proteinInput}
+                onChange={(event) => {
+                  setProteinInput(event.target.value);
+                  setProteinInputError(null);
+                }}
               />
             </div>
             <Button
@@ -919,7 +1021,7 @@ export function WorkoutApp() {
             >
               저장
             </Button>
-            <FormError message={proteinForm.formState.errors.grams?.message} />
+            <FormError message={proteinInputError ?? undefined} />
           </form>
         </Panel>
 
@@ -1087,7 +1189,18 @@ export function WorkoutApp() {
               <FormError message={workoutForm.formState.errors.exercise?.message} />
             </div>
 
-            <div className="mt-4 space-y-3">
+            {isTreadmillSelected ? (
+              <TreadmillFields
+                duration={treadmillDuration}
+                incline={treadmillIncline}
+                speed={treadmillSpeed}
+                onDurationChange={setTreadmillDuration}
+                onInclineChange={setTreadmillIncline}
+                onSpeedChange={setTreadmillSpeed}
+              />
+            ) : null}
+
+            <div className={cn("mt-4 space-y-3", isTreadmillSelected && "hidden")}>
               {fields.map((field, index) => (
                 <div
                   key={field.id}
@@ -1187,9 +1300,9 @@ export function WorkoutApp() {
             />
 
             <Button
-              className="mt-3 w-full"
+              className={cn("mt-3 w-full", isTreadmillSelected && "hidden")}
               variant="secondary"
-              onClick={() => append({ weight: recentWeight ?? 0, reps: 10 })}
+              onClick={() => append({ weight: getInitialWeight(recentWeight), reps: 10 })}
             >
               <Plus className="size-4" aria-hidden />
               세트 추가
@@ -1234,7 +1347,15 @@ export function WorkoutApp() {
               {recentEntries.map((entry) => (
                 <article
                   key={entry.id}
-                  className="grid grid-cols-[minmax(0,1fr)_36px] gap-3 rounded-lg border border-zinc-200 bg-white p-3 shadow-sm"
+                  className="grid cursor-pointer grid-cols-[minmax(0,1fr)_36px] gap-3 rounded-lg border border-zinc-200 bg-white p-3 shadow-sm transition-colors hover:bg-zinc-50"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setDetailEntry(entry)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      setDetailEntry(entry);
+                    }
+                  }}
                 >
                   <div className="min-w-0">
                     <time className="text-sm font-medium text-zinc-500">
@@ -1243,11 +1364,29 @@ export function WorkoutApp() {
                     <h3 className="mt-1 truncate text-base font-bold">
                       {entry.exercise}
                     </h3>
-                    <div className="mt-3 grid grid-cols-2 divide-x divide-zinc-200 rounded-md bg-zinc-50 text-sm">
+                    {entry.cardio ? (
+                      <div className="mt-3 grid grid-cols-2 divide-x divide-zinc-200 rounded-md bg-zinc-50 text-sm">
+                        <div className="px-3 py-2">
+                          <p className="text-xs text-zinc-500">시간</p>
+                          <p className="font-semibold">
+                            {entry.cardio.durationMinutes}분
+                          </p>
+                        </div>
+                        <div className="px-3 py-2">
+                          <p className="text-xs text-zinc-500">속도</p>
+                          <p className="font-semibold">
+                            {formatNumber(entry.cardio.speed)}km/h
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className={cn("mt-3 grid grid-cols-2 divide-x divide-zinc-200 rounded-md bg-zinc-50 text-sm", entry.cardio && "hidden")}>
                       <div className="px-3 py-2">
                         <p className="text-xs text-zinc-500">볼륨</p>
                         <p className="font-semibold">
-                          {formatNumber(getEntryVolume(entry))} kg
+                          {entry.cardio
+                            ? `${entry.cardio.durationMinutes}분`
+                            : `${formatNumber(getEntryVolume(entry))} kg`}
                         </p>
                       </div>
                       <div className="px-3 py-2">
@@ -1270,7 +1409,12 @@ export function WorkoutApp() {
                     className="self-center"
                     size="icon"
                     variant="ghost"
-                    onClick={() => deleteWorkoutMutation.mutate(entry.id)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (window.confirm(`${entry.exercise} 기록을 삭제할까요?`)) {
+                        deleteWorkoutMutation.mutate(entry.id);
+                      }
+                    }}
                   >
                     <Trash2 className="size-4" aria-hidden />
                   </Button>
@@ -1298,6 +1442,23 @@ export function WorkoutApp() {
               selectExercise(tipExercise.name);
               setTipExercise(null);
             }}
+          />
+        ) : null}
+
+        {detailEntry ? (
+          <WorkoutDetailSheet
+            entry={detailEntry}
+            onClose={() => setDetailEntry(null)}
+          />
+        ) : null}
+
+        {isSummaryOpen ? (
+          <WorkoutSummarySheet
+            date={selectedDate}
+            entries={dateEntries}
+            protein={selectedProtein}
+            title={summaryTitle}
+            onClose={() => setIsSummaryOpen(false)}
           />
         ) : null}
 
@@ -1457,6 +1618,81 @@ function Panel({
       )}
       {...props}
     />
+  );
+}
+
+type TreadmillFieldsProps = {
+  duration: number;
+  incline: number;
+  speed: number;
+  onDurationChange: (value: number) => void;
+  onInclineChange: (value: number) => void;
+  onSpeedChange: (value: number) => void;
+};
+
+function TreadmillFields({
+  duration,
+  incline,
+  speed,
+  onDurationChange,
+  onInclineChange,
+  onSpeedChange,
+}: TreadmillFieldsProps) {
+  return (
+    <div className="mt-4 grid grid-cols-3 gap-2 rounded-lg border border-zinc-100 bg-zinc-50 p-3">
+      <TreadmillSelect
+        label="시간"
+        unit="분"
+        value={duration}
+        options={TREADMILL_DURATION_OPTIONS}
+        onChange={onDurationChange}
+      />
+      <TreadmillSelect
+        label="경사도"
+        unit="%"
+        value={incline}
+        options={TREADMILL_INCLINE_OPTIONS}
+        onChange={onInclineChange}
+      />
+      <TreadmillSelect
+        label="속도"
+        unit="km/h"
+        value={speed}
+        options={TREADMILL_SPEED_OPTIONS}
+        onChange={onSpeedChange}
+      />
+    </div>
+  );
+}
+
+function TreadmillSelect({
+  label,
+  options,
+  unit,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: number[];
+  unit: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="grid gap-1.5">
+      <span className="text-xs font-semibold text-zinc-500">{label}</span>
+      <select
+        className="h-11 rounded-md border border-zinc-200 bg-white px-2 text-center text-sm font-bold text-zinc-950 shadow-sm outline-none focus:border-zinc-950 focus:ring-2 focus:ring-zinc-100"
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      >
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {formatNumber(option)} {unit}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -1631,6 +1867,174 @@ function ExerciseTipSheet({
           이 운동 선택
         </Button>
       </section>
+    </div>
+  );
+}
+
+function WorkoutDetailSheet({
+  entry,
+  onClose,
+}: {
+  entry: WorkoutEntry;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/35 px-3 pb-3 backdrop-blur-[2px]"
+      role="presentation"
+      onClick={onClose}
+    >
+      <section
+        aria-modal="true"
+        className="w-full max-w-[520px] rounded-lg border border-zinc-200 bg-white p-4 shadow-2xl"
+        role="dialog"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-zinc-500">
+              {formatRecordDate(entry.date)}
+            </p>
+            <h3 className="mt-1 truncate text-xl font-bold">{entry.exercise}</h3>
+          </div>
+          <button
+            aria-label="상세 닫기"
+            className="flex size-10 shrink-0 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
+            type="button"
+            onClick={onClose}
+          >
+            <X className="size-5" aria-hidden />
+          </button>
+        </div>
+
+        <WorkoutEntryDetail entry={entry} />
+      </section>
+    </div>
+  );
+}
+
+function WorkoutSummarySheet({
+  date,
+  entries,
+  protein,
+  title,
+  onClose,
+}: {
+  date: string;
+  entries: WorkoutEntry[];
+  protein: number;
+  title: string;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/35 px-3 pb-3 backdrop-blur-[2px]"
+      role="presentation"
+      onClick={onClose}
+    >
+      <section
+        aria-modal="true"
+        className="max-h-[86vh] w-full max-w-[520px] overflow-y-auto rounded-lg border border-zinc-200 bg-white p-4 shadow-2xl"
+        role="dialog"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-zinc-500">
+              {formatRecordDate(date)}
+            </p>
+            <h3 className="mt-1 truncate text-xl font-bold">{title}</h3>
+          </div>
+          <button
+            aria-label="요약 닫기"
+            className="flex size-10 shrink-0 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
+            type="button"
+            onClick={onClose}
+          >
+            <X className="size-5" aria-hidden />
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <div className="rounded-md bg-zinc-50 p-3">
+            <p className="text-xs font-semibold text-zinc-500">운동</p>
+            <p className="mt-1 text-lg font-bold">{entries.length}개</p>
+          </div>
+          <div className="rounded-md bg-zinc-50 p-3">
+            <p className="text-xs font-semibold text-zinc-500">단백질</p>
+            <p className="mt-1 text-lg font-bold">{formatNumber(protein)} g</p>
+          </div>
+        </div>
+
+        {entries.length === 0 ? (
+          <div className="mt-4 rounded-md border border-dashed border-zinc-300 bg-zinc-50 px-4 py-8 text-center text-sm text-zinc-500">
+            이 날짜에 저장된 운동이 없습니다.
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {entries.map((entry) => (
+              <article
+                key={entry.id}
+                className="rounded-lg border border-zinc-200 bg-white p-3"
+              >
+                <h4 className="font-bold">{entry.exercise}</h4>
+                <WorkoutEntryDetail entry={entry} compact />
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function WorkoutEntryDetail({
+  compact = false,
+  entry,
+}: {
+  compact?: boolean;
+  entry: WorkoutEntry;
+}) {
+  if (entry.cardio) {
+    return (
+      <div className={cn("grid grid-cols-3 gap-2", compact ? "mt-3" : "mt-4")}>
+        <DetailMetric label="시간" value={`${entry.cardio.durationMinutes}분`} />
+        <DetailMetric label="경사도" value={`${formatNumber(entry.cardio.incline)}%`} />
+        <DetailMetric label="속도" value={`${formatNumber(entry.cardio.speed)}km/h`} />
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn("space-y-2", compact ? "mt-3" : "mt-4")}>
+      {entry.sets.map((set, index) => (
+        <div
+          key={set.id}
+          className="grid grid-cols-[2.25rem_1fr_1fr] items-center gap-2 rounded-md bg-zinc-50 p-2 text-sm"
+        >
+          <span className="flex size-8 items-center justify-center rounded-full bg-zinc-200 font-bold text-zinc-900">
+            {index + 1}
+          </span>
+          <span className="font-semibold">{set.reps}회</span>
+          <span className="text-right font-semibold">
+            {formatNumber(set.weight)} kg
+          </span>
+        </div>
+      ))}
+      {entry.note ? (
+        <p className="rounded-md bg-zinc-50 p-3 text-sm leading-6 text-zinc-600">
+          {entry.note}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function DetailMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-zinc-50 p-3 text-center">
+      <p className="text-xs font-semibold text-zinc-500">{label}</p>
+      <p className="mt-1 text-sm font-bold text-zinc-950">{value}</p>
     </div>
   );
 }

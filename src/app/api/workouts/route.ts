@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getAuthenticatedSupabase } from "@/lib/api-auth";
-import type { WorkoutEntry, WorkoutSet } from "@/lib/workout-storage";
+import type {
+  WorkoutCardio,
+  WorkoutEntry,
+  WorkoutSet,
+} from "@/lib/workout-storage";
 
 export const dynamic = "force-dynamic";
 
@@ -12,11 +16,18 @@ const workoutSetSchema = z.object({
   reps: z.coerce.number().int().min(1),
 });
 
+const workoutCardioSchema = z.object({
+  durationMinutes: z.coerce.number().min(1),
+  incline: z.coerce.number().min(0),
+  speed: z.coerce.number().min(0),
+});
+
 const workoutEntrySchema = z.object({
   id: z.string().uuid(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   exercise: z.string().min(1),
-  sets: z.array(workoutSetSchema).min(1),
+  sets: z.array(workoutSetSchema),
+  cardio: workoutCardioSchema.optional(),
   note: z.string().optional(),
   createdAt: z.string(),
 });
@@ -26,6 +37,7 @@ type WorkoutEntryRow = {
   entry_date: string;
   exercise: string;
   sets: WorkoutSet[];
+  cardio: WorkoutCardio | null;
   note: string | null;
   created_at: string;
 };
@@ -36,6 +48,7 @@ function mapWorkoutRow(row: WorkoutEntryRow): WorkoutEntry {
     date: row.entry_date,
     exercise: row.exercise,
     sets: row.sets,
+    cardio: row.cardio || undefined,
     note: row.note || undefined,
     createdAt: row.created_at,
   };
@@ -50,7 +63,7 @@ export async function GET(request: Request) {
 
   const { data, error: queryError } = await supabase
     .from("workout_entries")
-    .select("id, entry_date, exercise, sets, note, created_at")
+    .select("id, entry_date, exercise, sets, cardio, note, created_at")
     .eq("user_id", user.id)
     .order("entry_date", { ascending: false })
     .order("created_at", { ascending: false });
@@ -89,10 +102,11 @@ export async function POST(request: Request) {
       entry_date: entry.date,
       exercise: entry.exercise,
       sets: entry.sets,
+      cardio: entry.cardio ?? null,
       note: entry.note ?? null,
       created_at: entry.createdAt,
     })
-    .select("id, entry_date, exercise, sets, note, created_at")
+    .select("id, entry_date, exercise, sets, cardio, note, created_at")
     .single();
 
   if (queryError) {

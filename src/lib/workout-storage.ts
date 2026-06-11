@@ -6,11 +6,18 @@ export type WorkoutSet = {
   reps: number;
 };
 
+export type WorkoutCardio = {
+  durationMinutes: number;
+  incline: number;
+  speed: number;
+};
+
 export type WorkoutEntry = {
   id: string;
   date: string;
   exercise: string;
   sets: WorkoutSet[];
+  cardio?: WorkoutCardio;
   note?: string;
   createdAt: string;
 };
@@ -111,7 +118,8 @@ export function getRecentWeightForExercise(
   }
 
   const match = entries.find(
-    (entry) => entry.exercise.trim().toLowerCase() === normalized,
+    (entry) =>
+      entry.exercise.trim().toLowerCase() === normalized && entry.sets.length > 0,
   );
 
   if (!match) {
