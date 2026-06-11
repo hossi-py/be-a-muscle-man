@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import type { User } from "@supabase/supabase-js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Armchair,
@@ -19,6 +20,8 @@ import {
   Info,
   LineChart,
   ListChecks,
+  LogOut,
+  Mail,
   MoveHorizontal,
   Plus,
   Repeat2,
@@ -40,6 +43,7 @@ import {
   useMemo,
   useState,
   type ComponentPropsWithoutRef,
+  type FormEvent,
 } from "react";
 import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
@@ -48,6 +52,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import {
   deleteWorkoutEntry,
   formatNumber,
@@ -115,6 +120,8 @@ const queryKeys = {
 };
 
 const HYDRATION_DATE = "2000-01-03";
+const EXERCISES_PER_PAGE = 8;
+const REP_OPTIONS = Array.from({ length: 30 }, (_, index) => index + 1);
 
 const categories: Array<{
   id: CategoryId;
@@ -342,23 +349,35 @@ function formatRecordDate(dateKey: string) {
 export function WorkoutApp() {
   const queryClient = useQueryClient();
   const [isClientReady, setIsClientReady] = useState(false);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [todayDate, setTodayDate] = useState(HYDRATION_DATE);
   const [selectedDate, setSelectedDate] = useState(HYDRATION_DATE);
   const [selectedCategory, setSelectedCategory] =
     useState<CategoryId>("upper");
+  const [exercisePage, setExercisePage] = useState(0);
+  const [exerciseTouchStart, setExerciseTouchStart] = useState<number | null>(
+    null,
+  );
   const [tipExercise, setTipExercise] = useState<WorkoutExercise | null>(null);
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [visibleMonth, setVisibleMonth] = useState(HYDRATION_DATE);
 
   const workoutsQuery = useQuery({
     queryKey: queryKeys.workouts,
-    enabled: isClientReady,
+    enabled: isClientReady && isAuthReady && Boolean(authUser),
     queryFn: loadWorkoutEntries,
   });
 
   const proteinQuery = useQuery({
     queryKey: queryKeys.protein,
-    enabled: isClientReady,
+    enabled: isClientReady && isAuthReady && Boolean(authUser),
     queryFn: loadProteinEntries,
   });
 
@@ -401,6 +420,77 @@ export function WorkoutApp() {
     workoutForm.setValue("date", today);
     setIsClientReady(true);
   }, [workoutForm]);
+
+  useEffect(() => {
+    let isMounted = true;
+    let unsubscribe: (() => void) | undefined;
+
+    async function loadSession() {
+      try {
+        const supabase = await getSupabaseBrowserClient();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        if (!isMounted) {
+          return;
+        }
+
+        setAuthUser(session?.user ?? null);
+
+        const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+          setAuthUser(session?.user ?? null);
+          queryClient.removeQueries({ queryKey: queryKeys.workouts });
+          queryClient.removeQueries({ queryKey: queryKeys.protein });
+        });
+
+        unsubscribe = () => data.subscription.unsubscribe();
+      } catch (error) {
+        if (isMounted) {
+          setAuthError(
+            error instanceof Error
+              ? error.message
+              : "로그인 설정을 불러오지 못했습니다.",
+          );
+        }
+      } finally {
+        if (isMounted) {
+          setIsAuthReady(true);
+        }
+      }
+    }
+
+    loadSession();
+
+    return () => {
+      isMounted = false;
+      unsubscribe?.();
+    };
+  }, [queryClient]);
+
+  useEffect(() => {
+    setExercisePage(0);
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    if (!isCalendarOpen) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    const previousPaddingRight = document.body.style.paddingRight;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+
+    document.body.style.overflow = "hidden";
+    if (scrollbarWidth > 0) {
+      document.body.style.paddingRight = `${scrollbarWidth}px`;
+    }
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.paddingRight = previousPaddingRight;
+    };
+  }, [isCalendarOpen]);
 
   const watchedExercise =
     useWatch({
@@ -445,6 +535,22 @@ export function WorkoutApp() {
 
     return exercises.filter((exercise) => exercise.category === selectedCategory);
   }, [selectedCategory]);
+  const exercisePageCount = Math.max(
+    1,
+    Math.ceil(filteredExercises.length / EXERCISES_PER_PAGE),
+  );
+  const pagedExercises = useMemo(
+    () =>
+      filteredExercises.slice(
+        exercisePage * EXERCISES_PER_PAGE,
+        exercisePage * EXERCISES_PER_PAGE + EXERCISES_PER_PAGE,
+      ),
+    [exercisePage, filteredExercises],
+  );
+
+  useEffect(() => {
+    setExercisePage((page) => Math.min(page, exercisePageCount - 1));
+  }, [exercisePageCount]);
 
   const recentEntries = useMemo(() => workouts.slice(0, 4), [workouts]);
 
@@ -516,6 +622,52 @@ export function WorkoutApp() {
     deleteWorkoutMutation.error ??
     saveProteinMutation.error;
 
+  async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError(null);
+    setAuthNotice(null);
+    setIsAuthSubmitting(true);
+
+    try {
+      const supabase = await getSupabaseBrowserClient();
+      const credentials = {
+        email: authEmail.trim(),
+        password: authPassword,
+      };
+      const { data, error } =
+        authMode === "signup"
+          ? await supabase.auth.signUp({
+              ...credentials,
+              options: {
+                emailRedirectTo: `${window.location.origin}/auth/callback`,
+              },
+            })
+          : await supabase.auth.signInWithPassword(credentials);
+
+      if (error) {
+        setAuthError(error.message);
+        return;
+      }
+
+      if (authMode === "signup" && !data.session) {
+        setAuthNotice("가입 확인 메일을 보냈습니다. 메일 인증 후 로그인해 주세요.");
+        return;
+      }
+
+      setAuthNotice(null);
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  }
+
+  async function handleSignOut() {
+    const supabase = await getSupabaseBrowserClient();
+    await supabase.auth.signOut();
+    setAuthUser(null);
+    queryClient.removeQueries({ queryKey: queryKeys.workouts });
+    queryClient.removeQueries({ queryKey: queryKeys.protein });
+  }
+
   function handleDateChange(date: string) {
     setSelectedDate(date);
     setVisibleMonth(date);
@@ -540,6 +692,27 @@ export function WorkoutApp() {
     });
   }
 
+  function handleExerciseTouchEnd(clientX: number) {
+    if (exerciseTouchStart === null) {
+      return;
+    }
+
+    const distance = clientX - exerciseTouchStart;
+
+    setExerciseTouchStart(null);
+    if (Math.abs(distance) < 48) {
+      return;
+    }
+
+    setExercisePage((page) => {
+      if (distance < 0) {
+        return Math.min(page + 1, exercisePageCount - 1);
+      }
+
+      return Math.max(page - 1, 0);
+    });
+  }
+
   function adjustSetWeight(index: number, amount: number) {
     const currentWeight = Number(
       workoutForm.getValues(`sets.${index}.weight`) || 0,
@@ -557,6 +730,31 @@ export function WorkoutApp() {
 
   if (!isClientReady) {
     return <WorkoutAppLoading />;
+  }
+
+  if (!isAuthReady) {
+    return <WorkoutAppLoading />;
+  }
+
+  if (!authUser) {
+    return (
+      <AuthScreen
+        email={authEmail}
+        error={authError}
+        isSubmitting={isAuthSubmitting}
+        mode={authMode}
+        notice={authNotice}
+        password={authPassword}
+        onEmailChange={setAuthEmail}
+        onModeChange={(mode) => {
+          setAuthMode(mode);
+          setAuthError(null);
+          setAuthNotice(null);
+        }}
+        onPasswordChange={setAuthPassword}
+        onSubmit={handleAuthSubmit}
+      />
+    );
   }
 
   return (
@@ -586,6 +784,20 @@ export function WorkoutApp() {
             <CalendarDays className="size-5" aria-hidden />
           </button>
         </header>
+
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm shadow-sm">
+          <span className="min-w-0 truncate font-medium text-zinc-600">
+            {authUser.email}
+          </span>
+          <button
+            className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 font-semibold text-zinc-900 transition-colors hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
+            type="button"
+            onClick={handleSignOut}
+          >
+            <LogOut className="size-4" aria-hidden />
+            로그아웃
+          </button>
+        </div>
 
         <section
           aria-label="주간 날짜"
@@ -689,7 +901,9 @@ export function WorkoutApp() {
               <Input
                 id="protein"
                 className="h-11 border-zinc-200 bg-white text-base focus:border-zinc-950 focus:ring-zinc-100"
+                inputMode="numeric"
                 min="0"
+                pattern="[0-9]*"
                 step="1"
                 type="number"
                 {...proteinForm.register("grams", {
@@ -743,8 +957,17 @@ export function WorkoutApp() {
             })}
           </div>
 
-          <div className="grid grid-cols-2 gap-2 min-[440px]:grid-cols-4">
-            {filteredExercises.map((exercise) => {
+          <div
+            className="grid touch-pan-y grid-cols-2 gap-2"
+            onTouchStart={(event) =>
+              setExerciseTouchStart(event.changedTouches[0]?.clientX ?? null)
+            }
+            onTouchCancel={() => setExerciseTouchStart(null)}
+            onTouchEnd={(event) =>
+              handleExerciseTouchEnd(event.changedTouches[0]?.clientX ?? 0)
+            }
+          >
+            {pagedExercises.map((exercise) => {
               const isSelected = watchedExercise === exercise.name;
 
               return (
@@ -784,6 +1007,48 @@ export function WorkoutApp() {
               );
             })}
           </div>
+          {exercisePageCount > 1 ? (
+            <div className="mt-3 flex items-center justify-center gap-2">
+              <button
+                aria-label="이전 운동 페이지"
+                className="flex size-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 disabled:opacity-40"
+                disabled={exercisePage === 0}
+                type="button"
+                onClick={() => setExercisePage((page) => Math.max(page - 1, 0))}
+              >
+                <ChevronLeft className="size-4" aria-hidden />
+              </button>
+              <div className="flex items-center gap-1.5">
+                {Array.from({ length: exercisePageCount }).map((_, index) => (
+                  <button
+                    key={index}
+                    aria-label={`${index + 1}번 운동 페이지`}
+                    className={cn(
+                      "h-2 rounded-full transition-all",
+                      index === exercisePage
+                        ? "w-5 bg-zinc-950"
+                        : "w-2 bg-zinc-300",
+                    )}
+                    type="button"
+                    onClick={() => setExercisePage(index)}
+                  />
+                ))}
+              </div>
+              <button
+                aria-label="다음 운동 페이지"
+                className="flex size-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 disabled:opacity-40"
+                disabled={exercisePage >= exercisePageCount - 1}
+                type="button"
+                onClick={() =>
+                  setExercisePage((page) =>
+                    Math.min(page + 1, exercisePageCount - 1),
+                  )
+                }
+              >
+                <ChevronRight className="size-4" aria-hidden />
+              </button>
+            </div>
+          ) : null}
         </Panel>
 
         <Panel>
@@ -834,9 +1099,30 @@ export function WorkoutApp() {
                     </span>
 
                     <label className="flex h-12 items-center justify-center gap-1 rounded-md bg-white px-2 text-sm text-zinc-700 shadow-sm">
+                      <select
+                        aria-label={`${index + 1}세트 횟수`}
+                        className="h-full w-12 bg-transparent text-center text-base font-semibold outline-none"
+                        value={Number(watchedSets[index]?.reps ?? 10)}
+                        onChange={(event) =>
+                          workoutForm.setValue(
+                            `sets.${index}.reps`,
+                            Number(event.target.value),
+                            {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            },
+                          )
+                        }
+                      >
+                        {REP_OPTIONS.map((reps) => (
+                          <option key={reps} value={reps}>
+                            {reps}
+                          </option>
+                        ))}
+                      </select>
                       <input
                         aria-label={`${index + 1}세트 횟수`}
-                        className="w-8 bg-transparent text-right text-base font-semibold outline-none"
+                        className="hidden"
                         min="1"
                         step="1"
                         type="number"
@@ -851,7 +1137,9 @@ export function WorkoutApp() {
                       <input
                         aria-label={`${index + 1}세트 무게`}
                         className="min-w-0 flex-1 bg-transparent text-center text-lg font-bold text-zinc-950 outline-none"
+                        inputMode="decimal"
                         min="0"
+                        pattern="[0-9]*[.,]?[0-9]*"
                         step="0.5"
                         type="number"
                         {...workoutForm.register(`sets.${index}.weight`, {
@@ -1027,6 +1315,131 @@ export function WorkoutApp() {
             }}
           />
         ) : null}
+      </div>
+    </main>
+  );
+}
+
+type AuthScreenProps = {
+  email: string;
+  error: string | null;
+  isSubmitting: boolean;
+  mode: "signin" | "signup";
+  notice: string | null;
+  password: string;
+  onEmailChange: (value: string) => void;
+  onModeChange: (mode: "signin" | "signup") => void;
+  onPasswordChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+};
+
+function AuthScreen({
+  email,
+  error,
+  isSubmitting,
+  mode,
+  notice,
+  password,
+  onEmailChange,
+  onModeChange,
+  onPasswordChange,
+  onSubmit,
+}: AuthScreenProps) {
+  const isSignup = mode === "signup";
+
+  return (
+    <main className="min-h-screen bg-[#f2f3ef] text-zinc-950">
+      <div className="mx-auto flex min-h-screen w-full max-w-[520px] flex-col justify-center gap-4 bg-[#fafaf7] px-4 py-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:px-6 md:my-6 md:min-h-0 md:rounded-lg md:border md:border-zinc-200">
+        <div className="flex items-center gap-3">
+          <div className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-zinc-950 text-white shadow-sm">
+            <Dumbbell className="size-6" aria-hidden />
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase text-zinc-500">
+              Workout Log
+            </p>
+            <h1 className="text-2xl font-bold leading-8">
+              {isSignup ? "회원가입" : "로그인"}
+            </h1>
+          </div>
+        </div>
+
+        <Panel>
+          <div className="mb-4 grid grid-cols-2 rounded-lg bg-zinc-100 p-1">
+            <button
+              className={cn(
+                "h-10 rounded-md text-sm font-bold transition-colors",
+                !isSignup ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500",
+              )}
+              type="button"
+              onClick={() => onModeChange("signin")}
+            >
+              로그인
+            </button>
+            <button
+              className={cn(
+                "h-10 rounded-md text-sm font-bold transition-colors",
+                isSignup ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500",
+              )}
+              type="button"
+              onClick={() => onModeChange("signup")}
+            >
+              회원가입
+            </button>
+          </div>
+
+          <form className="grid gap-3" onSubmit={onSubmit}>
+            <div className="grid gap-1.5">
+              <Label htmlFor="auth-email">이메일</Label>
+              <div className="relative">
+                <Mail
+                  className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-400"
+                  aria-hidden
+                />
+                <Input
+                  id="auth-email"
+                  autoComplete="email"
+                  className="h-12 bg-zinc-50 pl-9 text-base focus:border-zinc-950 focus:ring-zinc-100"
+                  inputMode="email"
+                  required
+                  type="email"
+                  value={email}
+                  onChange={(event) => onEmailChange(event.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="auth-password">비밀번호</Label>
+              <Input
+                id="auth-password"
+                autoComplete={isSignup ? "new-password" : "current-password"}
+                className="h-12 bg-zinc-50 text-base focus:border-zinc-950 focus:ring-zinc-100"
+                minLength={6}
+                required
+                type="password"
+                value={password}
+                onChange={(event) => onPasswordChange(event.target.value)}
+              />
+            </div>
+
+            {error ? (
+              <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-900">
+                {error}
+              </div>
+            ) : null}
+
+            {notice ? (
+              <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-700">
+                {notice}
+              </div>
+            ) : null}
+
+            <Button className="h-12 text-base" disabled={isSubmitting} type="submit">
+              {isSubmitting ? "처리 중..." : isSignup ? "계정 만들기" : "로그인"}
+            </Button>
+          </form>
+        </Panel>
       </div>
     </main>
   );

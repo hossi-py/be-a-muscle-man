@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getSupabaseServerClient } from "@/lib/supabase";
+import { getAuthenticatedSupabase } from "@/lib/api-auth";
 import type { WorkoutEntry, WorkoutSet } from "@/lib/workout-storage";
 
 export const dynamic = "force-dynamic";
-
-const profileId = process.env.WORKOUT_PROFILE_ID ?? "default";
 
 const workoutSetSchema = z.object({
   id: z.string(),
@@ -32,24 +30,6 @@ type WorkoutEntryRow = {
   created_at: string;
 };
 
-function getClientOrError() {
-  const supabase = getSupabaseServerClient();
-
-  if (!supabase) {
-    return {
-      error: NextResponse.json(
-        {
-          error:
-            "Supabase 환경변수가 없습니다. Vercel의 SUPABASE_URL, SUPABASE_ANON_KEY를 확인해 주세요.",
-        },
-        { status: 500 },
-      ),
-    };
-  }
-
-  return { supabase };
-}
-
 function mapWorkoutRow(row: WorkoutEntryRow): WorkoutEntry {
   return {
     id: row.id,
@@ -61,8 +41,8 @@ function mapWorkoutRow(row: WorkoutEntryRow): WorkoutEntry {
   };
 }
 
-export async function GET() {
-  const { supabase, error } = getClientOrError();
+export async function GET(request: Request) {
+  const { supabase, user, error } = await getAuthenticatedSupabase(request);
 
   if (error) {
     return error;
@@ -71,7 +51,7 @@ export async function GET() {
   const { data, error: queryError } = await supabase
     .from("workout_entries")
     .select("id, entry_date, exercise, sets, note, created_at")
-    .eq("profile_id", profileId)
+    .eq("user_id", user.id)
     .order("entry_date", { ascending: false })
     .order("created_at", { ascending: false });
 
@@ -85,7 +65,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const { supabase, error } = getClientOrError();
+  const { supabase, user, error } = await getAuthenticatedSupabase(request);
 
   if (error) {
     return error;
@@ -105,7 +85,7 @@ export async function POST(request: Request) {
     .from("workout_entries")
     .insert({
       id: entry.id,
-      profile_id: profileId,
+      user_id: user.id,
       entry_date: entry.date,
       exercise: entry.exercise,
       sets: entry.sets,

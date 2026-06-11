@@ -1,3 +1,5 @@
+import { getSupabaseAccessToken } from "@/lib/supabase-browser";
+
 export type WorkoutSet = {
   id: string;
   weight: number;
@@ -20,9 +22,16 @@ export type ProteinEntry = {
 };
 
 async function requestJson<T>(path: string, init?: RequestInit) {
+  const accessToken = await getSupabaseAccessToken();
+
+  if (!accessToken) {
+    throw new Error("로그인이 필요합니다.");
+  }
+
   const response = await fetch(path, {
     ...init,
     headers: {
+      Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
       ...init?.headers,
     },

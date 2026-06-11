@@ -1,36 +1,28 @@
 import { NextResponse } from "next/server";
 
-import { getSupabaseServerClient } from "@/lib/supabase";
+import { getAuthenticatedSupabase } from "@/lib/api-auth";
 
 export const dynamic = "force-dynamic";
 
-const profileId = process.env.WORKOUT_PROFILE_ID ?? "default";
-
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const supabase = getSupabaseServerClient();
+  const { supabase, user, error } = await getAuthenticatedSupabase(request);
 
-  if (!supabase) {
-    return NextResponse.json(
-      {
-        error:
-          "Supabase 환경변수가 없습니다. Vercel의 SUPABASE_URL, SUPABASE_ANON_KEY를 확인해 주세요.",
-      },
-      { status: 500 },
-    );
+  if (error) {
+    return error;
   }
 
   const { id } = await params;
-  const { error } = await supabase
+  const { error: queryError } = await supabase
     .from("workout_entries")
     .delete()
-    .eq("profile_id", profileId)
+    .eq("user_id", user.id)
     .eq("id", id);
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  if (queryError) {
+    return NextResponse.json({ error: queryError.message }, { status: 500 });
   }
 
   return NextResponse.json({ id });

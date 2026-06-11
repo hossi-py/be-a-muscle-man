@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getSupabaseServerClient } from "@/lib/supabase";
+import { getAuthenticatedSupabase } from "@/lib/api-auth";
 import type { ProteinEntry } from "@/lib/workout-storage";
 
 export const dynamic = "force-dynamic";
-
-const profileId = process.env.WORKOUT_PROFILE_ID ?? "default";
 
 const proteinEntrySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -20,24 +18,6 @@ type ProteinEntryRow = {
   updated_at: string;
 };
 
-function getClientOrError() {
-  const supabase = getSupabaseServerClient();
-
-  if (!supabase) {
-    return {
-      error: NextResponse.json(
-        {
-          error:
-            "Supabase 환경변수가 없습니다. Vercel의 SUPABASE_URL, SUPABASE_ANON_KEY를 확인해 주세요.",
-        },
-        { status: 500 },
-      ),
-    };
-  }
-
-  return { supabase };
-}
-
 function mapProteinRow(row: ProteinEntryRow): ProteinEntry {
   return {
     date: row.entry_date,
@@ -46,8 +26,8 @@ function mapProteinRow(row: ProteinEntryRow): ProteinEntry {
   };
 }
 
-export async function GET() {
-  const { supabase, error } = getClientOrError();
+export async function GET(request: Request) {
+  const { supabase, user, error } = await getAuthenticatedSupabase(request);
 
   if (error) {
     return error;
@@ -56,7 +36,7 @@ export async function GET() {
   const { data, error: queryError } = await supabase
     .from("protein_entries")
     .select("entry_date, grams, updated_at")
-    .eq("profile_id", profileId)
+    .eq("user_id", user.id)
     .order("entry_date", { ascending: false });
 
   if (queryError) {
@@ -69,7 +49,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const { supabase, error } = getClientOrError();
+  const { supabase, user, error } = await getAuthenticatedSupabase(request);
 
   if (error) {
     return error;
@@ -85,17 +65,33 @@ export async function POST(request: Request) {
   }
 
   const entry = parsed.data;
-  const { data, error: queryError } = await supabase
+  const payload = {
+    user_id: user.id,
+    entry_date: entry.date,
+    grams: entry.grams,
+    updated_at: entry.updatedAt,
+  };
+
+  const { data: existing, error: lookupError } = await supabase
     .from("protein_entries")
-    .upsert(
-      {
-        profile_id: profileId,
-        entry_date: entry.date,
-        grams: entry.grams,
-        updated_at: entry.updatedAt,
-      },
-      { onConflict: "profile_id,entry_date" },
-    )
+    .select("entry_date")
+    .eq("user_id", user.id)
+    .eq("entry_date", entry.date)
+    .maybeSingle();
+
+  if (lookupError) {
+    return NextResponse.json({ error: lookupError.message }, { status: 500 });
+  }
+
+  const query = existing
+    ? supabase
+        .from("protein_entries")
+        .update(payload)
+        .eq("user_id", user.id)
+        .eq("entry_date", entry.date)
+    : supabase.from("protein_entries").insert(payload);
+
+  const { data, error: queryError } = await query
     .select("entry_date, grams, updated_at")
     .single();
 
